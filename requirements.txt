@@ -1,0 +1,11 @@
+anthropic>=0.40.0
+notion-client>=2.2.1,<3
+python-pptx>=0.6.23
+pymupdf>=1.24.0
+watchdog>=4.0.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+httpx>=0.27
+pillow>=10.0
+openai>=1.40
+ddgs>=9.0

@@ -1,0 +1,45 @@
+# Non-secret settings. Secrets live in .env
+
+inbox: inbox                 # watched folder, layout: inbox/<UNIT>/<LECTURE>/files
+state_file: state/state.json # remembers what was processed (hash based, avoids duplicates)
+debounce_seconds: 20         # wait this long after the last file change before processing
+
+llm:
+  provider: gemini           # gemini = free tier (needs free API key) | ollama = free, local | anthropic = paid
+  model: null                # null picks a default: gemini-flash-latest / llama3.1:8b / claude-sonnet-5-5
+  condense_model: null       # model for condensing very long transcripts (null = same as model)
+  vision: null               # can the model see images? null = yes for gemini/anthropic, no for ollama
+  max_tokens: 16000
+  max_input_chars: null      # above this, transcripts are condensed first (null = sensible default per provider)
+  chunk_chars: null
+  base_url: null             # only for custom OpenAI compatible servers
+
+figures:
+  enabled: true              # include diagrams/charts from slides in the notes
+  render_with_libreoffice: true  # render whole slides to images (needs LibreOffice installed)
+  render_zoom: 1.6           # image sharpness, 1.6 gives about 1500px wide slides
+  max_candidates: 30         # how many candidate figures the model gets to look at (costs tokens)
+  max_in_notes: 10           # at most this many figures end up in one lecture's notes
+  dir: state/figures
+
+references:
+  enabled: true              # add a few real reference links (small text, at the end)
+  method: ddgs               # ddgs = free DuckDuckGo search, no key | anthropic = paid web search tool
+  max_references: 6
+  max_searches: 5            # anthropic method only
+  model: null                # anthropic method only
+
+obsidian:
+  enabled: true
+  subfolder: Uni             # notes go to <vault>/Uni/<UNIT>/<Lecture - Title>.md
+  link_existing_notes: true  # let the model [[wikilink]] to notes already in the vault
+
+notion:
+  enabled: true
+  # Property names in your Notion database. Set one to null to skip it.
+  properties:
+    title: Name              # must be the database's title property
+    unit: Unit               # select
+    lecture: Lecture         # rich text
+    tags: Tags               # multi-select
+    date: Date               # date

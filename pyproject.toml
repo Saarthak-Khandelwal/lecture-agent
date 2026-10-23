@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lecture-agent"
+version = "0.1.0"
+description = "Drop lecture slides, notes and transcripts in a folder; get structured notes in Obsidian and Notion."
+requires-python = ">=3.10"
+dependencies = [
+  "anthropic>=0.40.0",
+  "notion-client>=2.2.1,<3",
+  "python-pptx>=0.6.23",
+  "pymupdf>=1.24.0",
+  "watchdog>=4.0.0",
+  "python-dotenv>=1.0.0",
+  "pyyaml>=6.0",
+  "httpx>=0.27",
+  "openai>=1.40",
+  "ddgs>=9.0",
+  "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+lecture-agent = "lecture_agent.main:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
