@@ -8,7 +8,7 @@ from .config import Config
 from .extractors import extract
 from .figures import build_figures
 from .lectures import all_lecture_dirs, build_lecture
-from .llm import generate_notes
+from .llm import generate_notes,LLMUnavailable
 from .references import collect_references, urls_from_material
 from .render import used_figure_ids
 from .state import State
@@ -84,6 +84,9 @@ def scan_all(cfg: Config, state: State, force: bool = False) -> int:
     for folder in all_lecture_dirs(cfg.inbox):
         try:
             done += bool(process_lecture(cfg, state, folder, force=force))
+        except LLMUnavailable:
+            log.warning("Model unavailable, stopping this scan. Remaining lectures wait for the next scheduled rescan.")
+            break
         except Exception:
             log.exception("Failed processing %s", folder)
     return done

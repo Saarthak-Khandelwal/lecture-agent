@@ -17,11 +17,19 @@ from .extractors import Source
 from .figures import Figure, thumbnail
 from .prompts import CONDENSE, SYSTEM, SYSTEM_PLAIN, TOOL
 
+from openai import APIConnectionError, InternalServerError, OpenAI, RateLimitError
+
 log = logging.getLogger(__name__)
+
+class LLMUnavailable(RuntimeError):
+    def __init__(self, msg: str, quota: bool = False):
+        super().__init__(msg)
+        self.quota = quota   # True = rate limit/quota, False = server overload
 
 BASE_URLS = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
     "ollama": "http://localhost:11434/v1",
+    "openai": "https://api.openai.com/v1",
 }
 
 
@@ -56,34 +64,72 @@ def _to_openai_parts(blocks: list[dict]) -> list[dict]:
                           "image_url": {"url": f"data:{src['media_type']};base64,{src['data']}"}})
     return parts
 
+def _endpoint(cfg: Config, provider: str) -> tuple[str, str]:
+    if provider == "ollama":
+        key = "ollama"
+    else:
+        key = getattr(cfg, f"{provider}_api_key", "")
+        if not key:
+            raise RuntimeError(f"No API key configured for {provider}")
+    url = (cfg.llm_base_url if provider == cfg.provider and cfg.llm_base_url else None) or BASE_URLS[provider]
+    return key, url
 
-def _chat_text(cfg: Config, system: str, content: list[dict] | str, model: str, max_tokens: int) -> str:
-    """One chat completion on an OpenAI compatible provider (gemini / ollama), with rate limit retries."""
-    from openai import APIConnectionError, OpenAI, RateLimitError
-
-    client = OpenAI(
-        api_key=cfg.gemini_api_key if cfg.provider == "gemini" else "ollama",
-        base_url=cfg.llm_base_url or BASE_URLS[cfg.provider],
-        timeout=600,
-    )
+def _chat_text(cfg, system, content, model, max_tokens, provider=None, attempts=6) -> str:
+    provider = provider or cfg.provider
+    api_key, base_url = _endpoint(cfg, provider)
+    client = OpenAI(api_key=api_key, base_url=base_url, timeout=600, max_retries=0)
     user = content if isinstance(content, str) else _to_openai_parts(content)
-    for attempt in range(6):
+    limit = {"max_completion_tokens": max_tokens} if provider == "openai" else {"max_tokens": max_tokens}
+    quota = False
+    for attempt in range(attempts):
         try:
             resp = client.chat.completions.create(
                 model=model,
-                max_tokens=max_tokens,
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
+                **limit,
             )
+            usage = getattr(resp, "usage", None)
+            if usage:
+                log.info("Tokens used by %s: input=%s output=%s", model,
+                         usage.prompt_tokens, usage.completion_tokens)
             return resp.choices[0].message.content or ""
         except RateLimitError:
-            wait = min(20 * 2 ** attempt, 180)  # free tiers allow only a few requests per minute
-            log.warning("Rate limited by %s, waiting %ds (attempt %d/6)", cfg.provider, wait, attempt + 1)
-            time.sleep(wait)
+            quota = True
+            wait = min(20 * 2 ** attempt, 180)
+            log.warning("Rate limited by %s, waiting %ds (attempt %d/%d)", provider, wait, attempt + 1, attempts)
+            if attempt < attempts - 1:
+                time.sleep(wait)
+        except InternalServerError as e:  # 500/503 "high demand": usually clears in minutes
+            quota = False
+            wait = min(30 * 2 ** attempt, 300)
+            log.warning("%s server error %s, waiting %ds (attempt %d/%d)", provider,
+                        getattr(e, "status_code", "5xx"), wait, attempt + 1, attempts)
+            if attempt < attempts - 1:
+                time.sleep(wait)
         except APIConnectionError as e:
-            hint = " Is Ollama running? Start it with `ollama serve`." if cfg.provider == "ollama" else ""
-            raise RuntimeError(f"Could not reach the {cfg.provider} API.{hint}") from e
-    raise RuntimeError(f"Still rate limited by {cfg.provider} after several retries, try again later")
+            hint = " Is Ollama running? Start it with `ollama serve`." if provider == "ollama" else ""
+            raise RuntimeError(f"Could not reach the {provider} API.{hint}") from e
+    raise LLMUnavailable(f"{provider} is rate limited or overloaded after {attempts} attempts", quota=quota)
 
+_primary_down_until = 0.0   # skip the primary for a while after it fails
+
+def _chat(cfg, system, content, model, max_tokens) -> str:
+    """Try the primary provider, fall back to the backup if it is rate limited or overloaded."""
+    global _primary_down_until
+    if not cfg.fallback_provider:
+        return _chat_text(cfg, system, content, model, max_tokens)
+
+    if time.time() >= _primary_down_until:
+        try:
+            # fewer attempts than normal, so we fail over in a minute or so, not 10+ minutes
+            return _chat_text(cfg, system, content, model, max_tokens, attempts=2)
+        except LLMUnavailable as e:
+            _primary_down_until = time.time() + (3600 if e.quota else 600)
+            log.warning("%s unavailable (%s), using %s for the next %d min",
+                        cfg.provider, e, cfg.fallback_provider, (3600 if e.quota else 600) // 60)
+
+    return _chat_text(cfg, system, content, cfg.fallback_model, max_tokens,
+                      provider=cfg.fallback_provider)
 
 def _complete_plain(cfg: Config, system: str, text: str, model: str, max_tokens: int) -> str:
     """Text in, text out, for any provider (used for transcript condensing)."""
@@ -92,7 +138,7 @@ def _complete_plain(cfg: Config, system: str, text: str, model: str, max_tokens:
         resp = client.messages.create(model=model, max_tokens=max_tokens, system=system,
                                       messages=[{"role": "user", "content": text}])
         return "".join(b.text for b in resp.content if b.type == "text")
-    return _chat_text(cfg, system, text, model, max_tokens)
+    return _chat(cfg, system, text, model, max_tokens)
 
 
 def _condense_transcripts(cfg: Config, sources: list[Source]) -> list[Source]:
@@ -240,7 +286,7 @@ def generate_notes(
 
     last_error: Exception | None = None
     for attempt in range(2):  # smaller models sometimes ignore the format, so try once more
-        raw = _chat_text(cfg, SYSTEM_PLAIN, content, cfg.model, cfg.max_tokens)
+        raw = _chat(cfg, SYSTEM_PLAIN, content, cfg.model, cfg.max_tokens)
         try:
             notes = parse_plain(raw)
             notes["tags"] = _clean_tags(notes["tags"])

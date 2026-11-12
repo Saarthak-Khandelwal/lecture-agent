@@ -59,6 +59,9 @@ class Config:
     notion_database_id: str | None = None
     anthropic_api_key: str | None = None
     gemini_api_key: str | None = None
+    openai_api_key: str | None = None
+    fallback_provider: str = ""
+    fallback_model: str = ""
 
 
 def _path(value: str) -> Path:
@@ -116,6 +119,9 @@ def load_config(config_file: Path | None = None) -> Config:
         notion_database_id=os.getenv("NOTION_DATABASE_ID"),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY"),
         gemini_api_key=os.getenv("GEMINI_API_KEY"),
+        openai_api_key=os.getenv("OPENAI_API_KEY"),
+        fallback_provider=(os.getenv("FALLBACK_PROVIDER") or llm.get("fallback_provider") or "").strip().lower(),
+        fallback_model=(os.getenv("FALLBACK_MODEL") or llm.get("fallback_model") or "").strip(),
     )
 
 
@@ -140,6 +146,15 @@ def validate(cfg: Config) -> list[str]:
             problems.append("NOTION_TOKEN is not set (or set notion.enabled: false)")
         if not cfg.notion_database_id:
             problems.append("NOTION_DATABASE_ID is not set (run `lecture-agent init-notion <page_id>`)")
+    if cfg.fallback_provider:
+        if cfg.fallback_provider not in ("openai", "gemini", "ollama"):
+            problems.append("FALLBACK_PROVIDER must be openai, gemini or ollama")
+        elif cfg.fallback_provider == cfg.provider:
+            problems.append("FALLBACK_PROVIDER is the same as llm.provider, so it is no backup")
+        if not cfg.fallback_model:
+            problems.append("FALLBACK_MODEL is not set")
+        if cfg.fallback_provider == "openai" and not cfg.openai_api_key:
+            problems.append("OPENAI_API_KEY is not set (needed for the OpenAI fallback)")
     if not cfg.obsidian_enabled and not cfg.notion_enabled:
         problems.append("Both outputs are disabled, nothing to do")
     return problems
